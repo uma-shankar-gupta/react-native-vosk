@@ -74,6 +74,39 @@ export function stop() {
 }
 
 /**
+ * Transcribes a wav file or raw PCM data.
+ *
+ * @param pathOrData - Path of the wav file or Base64 encoded PCM data.
+ * @param options - Options for transcription.
+ * @returns A promise that resolves with the transcription result
+  * @example
+  *   // File
+ * transcribeFile('/path/to/file.wav').then((result) => {
+ * console.log(result);
+ *   });
+ *   // Raw Data (Base64)
+ *   transcribeFile(base64Data, { isRawData: true }).then((result) => {
+ *      console.log(result);
+ *   });
+ *   // Raw Data (Array)
+ *   transcribeFile([0, 1, ...], { isRawData: true }).then((result) => {
+ *      console.log(result);
+ *   });
+ */
+export function transcribeFile(
+  pathOrData: string | number[],
+  options: { isRawData?: boolean } = {}
+): Promise<string> {
+  if (Array.isArray(pathOrData)) {
+    return Vosk.transcribeDataArray(pathOrData);
+  }
+  if (options.isRawData) {
+    return Vosk.transcribeData(pathOrData as string);
+  }
+  return Vosk.transcribeFile(pathOrData as string);
+}
+
+/**
  * Event listener for error event
  *
  * @param cb - Callback to be called on error event

@@ -316,6 +316,101 @@ RCT_EXPORT_MODULE()
 - (void)removeListeners:(double)count {
 }
 
+RCT_EXPORT_METHOD(transcribeFile:(nonnull NSString *)path
+                  resolve:(nonnull RCTPromiseResolveBlock)resolve
+                  reject:(nonnull RCTPromiseRejectBlock)reject) {
+    if (_currentModel == nil) {
+        reject(@"transcribeFile", @"Model not loaded", nil);
+        return;
+    }
+    
+    dispatch_async(_processingQueue, ^{
+        VoskRecognizer *recognizer = vosk_recognizer_new(_currentModel.model, 16000.0f);
+        if (!recognizer) {
+             reject(@"transcribeFile", @"Failed to create recognizer", nil);
+             return;
+        }
+        
+        NSData *data = [NSData dataWithContentsOfFile:path];
+        if (!data) {
+            vosk_recognizer_free(recognizer);
+            reject(@"transcribeFile", @"Failed to read file", nil);
+            return;
+        }
+        
+        vosk_recognizer_accept_waveform(recognizer, (const char *)[data bytes], (int)[data length]);
+        
+        const char *res = vosk_recognizer_final_result(recognizer);
+        NSString *resultStr = res ? [NSString stringWithUTF8String:res] : @"";
+        
+        vosk_recognizer_free(recognizer);
+        resolve(resultStr);
+    });
+}
+
+RCT_EXPORT_METHOD(transcribeData:(nonnull NSString *)dataStr
+                  resolve:(nonnull RCTPromiseResolveBlock)resolve
+                  reject:(nonnull RCTPromiseRejectBlock)reject) {
+    if (_currentModel == nil) {
+        reject(@"transcribeData", @"Model not loaded", nil);
+        return;
+    }
+    
+    dispatch_async(_processingQueue, ^{
+        VoskRecognizer *recognizer = vosk_recognizer_new(_currentModel.model, 16000.0f);
+        if (!recognizer) {
+             reject(@"transcribeData", @"Failed to create recognizer", nil);
+             return;
+        }
+        
+        NSData *data = [[NSData alloc] initWithBase64EncodedString:dataStr options:0];
+        if (!data) {
+            vosk_recognizer_free(recognizer);
+            reject(@"transcribeData", @"Failed to decode base64 data", nil);
+            return;
+        }
+        
+        vosk_recognizer_accept_waveform(recognizer, (const char *)[data bytes], (int)[data length]);
+        
+        const char *res = vosk_recognizer_final_result(recognizer);
+        NSString *resultStr = res ? [NSString stringWithUTF8String:res] : @"";
+        
+        vosk_recognizer_free(recognizer);
+        resolve(resultStr);
+    });
+}
+
+RCT_EXPORT_METHOD(transcribeDataArray:(nonnull NSArray<NSNumber *> *)dataArray
+                  resolve:(nonnull RCTPromiseResolveBlock)resolve
+                  reject:(nonnull RCTPromiseRejectBlock)reject) {
+    if (_currentModel == nil) {
+        reject(@"transcribeDataArray", @"Model not loaded", nil);
+        return;
+    }
+    
+    dispatch_async(_processingQueue, ^{
+        VoskRecognizer *recognizer = vosk_recognizer_new(_currentModel.model, 16000.0f);
+        if (!recognizer) {
+             reject(@"transcribeDataArray", @"Failed to create recognizer", nil);
+             return;
+        }
+        
+        NSMutableData *data = [NSMutableData dataWithLength:dataArray.count];
+        uint8_t *bytes = (uint8_t *)[data mutableBytes];
+        for (NSUInteger i = 0; i < dataArray.count; i++) {
+            bytes[i] = (uint8_t)[dataArray[i] unsignedCharValue];
+        }
+        
+        vosk_recognizer_accept_waveform(recognizer, (const char *)[data bytes], (int)[data length]);
+        
+        const char *res = vosk_recognizer_final_result(recognizer);
+        NSString *resultStr = res ? [NSString stringWithUTF8String:res] : @"";
+        
+        vosk_recognizer_free(recognizer);
+        resolve(resultStr);
+    });
+}
+
 - (std::shared_ptr<facebook::react::TurboModule>)getTurboModule:
     (const facebook::react::ObjCTurboModule::InitParams &)params {
   return std::make_shared<facebook::react::NativeVoskSpecJSI>(params);

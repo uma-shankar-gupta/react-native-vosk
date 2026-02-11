@@ -208,6 +208,80 @@ class VoskModule(reactContext: ReactApplicationContext) :
     }
   }
 
+  /**
+   * Transcribe PCM 16-bit LE, 16 kHz, mono data from a Base64 string.
+   * @param data Base64 encoded PCM data
+   * @param promise resolves to the Vosk JSON string
+   */
+  @ReactMethod
+  fun transcribeData(data: String, promise: Promise) {
+    // Ensure model is loaded
+    if (model == null) {
+      promise.reject("NO_MODEL", "Call loadModel() first")
+      return
+    }
+
+    var recognizer: Recognizer? = null
+    try {
+      // Create a new recognizer on the same model & sample rate
+      recognizer = Recognizer(model, sampleRate)
+
+      // Decode Base64 string to byte array
+      val bytes = android.util.Base64.decode(data, android.util.Base64.NO_WRAP)
+
+      // Feed the data to the recognizer
+      recognizer.acceptWaveForm(bytes, bytes.size)
+
+      // Pull out the final result JSON
+      val resultJson = recognizer.finalResult
+      promise.resolve(resultJson)
+    } catch (e: Exception) {
+      promise.reject("TRANSCRIBE_FAIL", e)
+    } finally {
+      // Clean up
+      recognizer?.close()
+    }
+  }
+
+  /**
+   * Transcribe PCM 16-bit LE, 16 kHz, mono data from a byte array (passed as ReadableArray).
+   * @param data ReadableArray of bytes (numbers)
+   * @param promise resolves to the Vosk JSON string
+   */
+  @ReactMethod
+  fun transcribeDataArray(data: ReadableArray, promise: Promise) {
+    // Ensure model is loaded
+    if (model == null) {
+      promise.reject("NO_MODEL", "Call loadModel() first")
+      return
+    }
+
+    var recognizer: Recognizer? = null
+    try {
+      // Create a new recognizer on the same model & sample rate
+      recognizer = Recognizer(model, sampleRate)
+
+      // Convert ReadableArray to ByteArray
+      val size = data.size()
+      val bytes = ByteArray(size)
+      for (i in 0 until size) {
+        bytes[i] = data.getInt(i).toByte()
+      }
+
+      // Feed the data to the recognizer
+      recognizer.acceptWaveForm(bytes, size)
+
+      // Pull out the final result JSON
+      val resultJson = recognizer.finalResult
+      promise.resolve(resultJson)
+    } catch (e: Exception) {
+      promise.reject("TRANSCRIBE_FAIL", e)
+    } finally {
+      // Clean up
+      recognizer?.close()
+    }
+  }
+
   private fun cleanRecognizer() {
     synchronized(this) {
       if (isStopping) {

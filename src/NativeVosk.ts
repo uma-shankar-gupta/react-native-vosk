@@ -20,6 +20,10 @@ export interface Spec extends TurboModule {
   start: (options?: VoskOptions) => Promise<void>;
   stop: () => void;
 
+  transcribeFile: (wavPath: string) => Promise<string>;
+  transcribeData: (data: string) => Promise<string>;
+  transcribeDataArray: (data: number[]) => Promise<string>;
+
   addListener: (eventType: string) => void;
   removeListeners: (count: number) => void;
 

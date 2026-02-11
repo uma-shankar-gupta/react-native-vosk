@@ -267,6 +267,51 @@ vosk
 
 #### [Complete example](https://github.com/riderodd/react-native-vosk/blob/main/example/src/App.tsx)
 
+## Transcription
+
+You can transcribe an audio file or raw PCM data using `transcribeFile`.
+
+### File path
+
+```js
+vosk
+  .transcribeFile('/path/to/file.wav')
+  .then((res) => {
+    console.log(res);
+  })
+  .catch((e) => {
+    console.error(e);
+  });
+```
+
+### Raw PCM Data (Base64)
+
+```js
+const base64Data = '...'; // Your base64 encoded PCM data
+vosk
+  .transcribeFile(base64Data, { isRawData: true })
+  .then((res) => {
+    console.log(res);
+  })
+  .catch((e) => {
+    console.error(e);
+  });
+```
+
+### Raw PCM Data (Byte Array)
+
+```js
+const pcmBytes = [0, 10, ...]; // Your byte array
+vosk
+  .transcribeFile(pcmBytes)
+  .then((res) => {
+    console.log(res);
+  })
+  .catch((e) => {
+    console.error(e);
+  });
+```
+
 ## Contributing
 
 See the [contributing guide](CONTRIBUTING.md) to learn how to contribute to the repository and the development workflow.
