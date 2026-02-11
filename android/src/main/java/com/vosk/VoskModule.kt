@@ -7,6 +7,7 @@ import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.module.annotations.ReactModule
 import com.facebook.react.modules.core.DeviceEventManagerModule
+import java.io.FileInputStream
 import java.io.IOException
 import org.json.JSONObject
 import org.vosk.Model
@@ -14,7 +15,6 @@ import org.vosk.Recognizer
 import org.vosk.android.RecognitionListener
 import org.vosk.android.SpeechService
 import org.vosk.android.StorageService
-import com.vosk.NativeVoskSpec
 
 @ReactModule(name = VoskModule.NAME)
 class VoskModule(reactContext: ReactApplicationContext) :
@@ -162,6 +162,49 @@ class VoskModule(reactContext: ReactApplicationContext) :
     } catch (e: IOException) {
       cleanRecognizer()
       promise.reject(e)
+    }
+  }
+
+  /**
+   * Transcribe a 16 kHz mono WAV file from disk.
+   * @param wavPath absolute path to a .wav file (PCM 16-bit LE, 16 kHz, mono)
+   * @param promise resolves to the Vosk JSON string
+   */
+  @ReactMethod
+  fun transcribeFile(wavPath: String, promise: Promise) {
+    // Ensure model is loaded
+    if (model == null) {
+      promise.reject("NO_MODEL", "Call loadModel() first")
+      return
+    }
+
+    var recognizer: Recognizer? = null
+    var input: FileInputStream? = null
+    try {
+      // Create a new recognizer on the same model & sample rate
+      recognizer = Recognizer(model, sampleRate)
+
+      // Open the WAV file
+      input = FileInputStream(wavPath)
+      val buffer = ByteArray(4096)
+      var bytesRead: Int
+
+      // Read & feed each chunk
+      while (input.read(buffer).also { bytesRead = it } > 0) {
+        recognizer.acceptWaveForm(buffer, bytesRead)
+      }
+
+      // Pull out the final result JSON
+      val resultJson = recognizer.finalResult
+      promise.resolve(resultJson)
+    } catch (e: Exception) {
+      promise.reject("TRANSCRIBE_FAIL", e)
+    } finally {
+      // Clean up
+      try {
+        input?.close()
+      } catch (_: IOException) {}
+      recognizer?.close()
     }
   }
 
