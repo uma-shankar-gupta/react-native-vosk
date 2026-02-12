@@ -312,6 +312,77 @@ vosk
   });
 ```
 
+## Streaming API
+
+The streaming API allows you to progressively feed PCM audio chunks to the recognizer, useful for real-time audio processing from microphones or other audio sources.
+
+### Basic Usage
+
+```js
+// Load model first
+await vosk.loadModel('model-en-us');
+
+// Start streaming session
+await vosk.startStreaming();
+
+// Feed audio chunks progressively
+for (const chunk of audioChunks) {
+  await vosk.feedChunk(chunk); // chunk is number[] (byte array)
+}
+
+// Stop and get final result
+const result = await vosk.stopStreaming();
+console.log(JSON.parse(result).text);
+```
+
+### With Grammar
+
+```js
+await vosk.startStreaming({
+  grammar: ['yes', 'no', 'maybe', '[unk]']
+});
+
+// Feed chunks...
+const result = await vosk.stopStreaming();
+```
+
+### Events
+
+The streaming API emits the same events as the regular recording API:
+
+```js
+await vosk.startStreaming();
+
+// Listen for partial results while streaming
+vosk.onPartialResult((partial) => {
+  console.log('Partial:', partial);
+});
+
+// Listen for final results (on silence detection)
+vosk.onResult((result) => {
+  console.log('Result:', result);
+});
+
+// Feed chunks...
+await vosk.stopStreaming();
+```
+
+### Methods
+
+| Method | Arguments | Return | Description |
+| --- | --- | --- | --- |
+| `startStreaming` | `options?: VoskOptions` | `Promise<string>` | Starts a streaming session. Optional grammar parameter. |
+| `feedChunk` | `data: number[]` | `Promise<boolean>` | Feeds a PCM audio chunk (byte array). Emits events on results. |
+| `stopStreaming` | none | `Promise<string>` | Stops streaming and returns final Vosk JSON result. |
+
+### Audio Format
+
+- **Sample rate**: 16 kHz
+- **Bit depth**: 16-bit PCM
+- **Channels**: Mono
+- **Encoding**: Little-endian
+- **Format**: Raw PCM bytes as `number[]` (0-255)
+
 ## Contributing
 
 See the [contributing guide](CONTRIBUTING.md) to learn how to contribute to the repository and the development workflow.

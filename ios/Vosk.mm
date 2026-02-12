@@ -12,6 +12,7 @@ static void *kVoskProcessingQueueKey = &kVoskProcessingQueueKey;
   // État interne migré depuis Swift
   RNVoskModel *_Nullable _currentModel;
   VoskRecognizer *_Nullable _recognizer;
+  VoskRecognizer *_Nullable _streamingRecognizer; // For streaming API
   AVAudioEngine *_audioEngine;
   AVAudioInputNode *_inputNode;
   AVAudioFormat *_formatInput;
@@ -19,10 +20,10 @@ static void *kVoskProcessingQueueKey = &kVoskProcessingQueueKey;
   NSString *_Nullable _lastPartial;
   dispatch_source_t _Nullable _timeoutSource; // high-performance GCD timer
   // removed _hasListener management: we always emit
-  BOOL _isRunning; // protects use of recognizer after stop
-  BOOL _isStarting; // prevents concurrent start
+  BOOL _isRunning;    // protects use of recognizer after stop
+  BOOL _isStarting;   // prevents concurrent start
   BOOL _tapInstalled; // track tap installation
-  BOOL _pendingTap; // indicates we are retrying tap installation
+  BOOL _pendingTap;   // indicates we are retrying tap installation
   int _tapRetryCount; // retry counter
 }
 RCT_EXPORT_MODULE()
@@ -94,15 +95,16 @@ RCT_EXPORT_MODULE()
   _isStarting = YES;
   _tapRetryCount = 0;
   _pendingTap = NO;
-  
-  // Lazy initialization of audio engine to avoid permission prompt at module load
+
+  // Lazy initialization of audio engine to avoid permission prompt at module
+  // load
   if (!_audioEngine) {
     _audioEngine = [AVAudioEngine new];
   }
   if (!_inputNode) {
     _inputNode = _audioEngine.inputNode;
   }
-  
+
   AVAudioSession *audioSession = [AVAudioSession sharedInstance];
 
   // Extract options (grammar, timeout) from the codegen structure
@@ -115,7 +117,8 @@ RCT_EXPORT_MODULE()
       size_t count = gVec->size();
       for (size_t i = 0; i < count; ++i) {
         NSString *s = gVec->at(static_cast<int>(i));
-        if (s) [tmp addObject:s];
+        if (s)
+          [tmp addObject:s];
       }
       grammar = tmp.count > 0 ? tmp : nil;
     }
@@ -137,14 +140,18 @@ RCT_EXPORT_MODULE()
       [audioSession setCategory:AVAudioSessionCategoryRecord error:&catErr];
     }
     if (catErr) {
-      NSString *msg = [NSString stringWithFormat:@"Audio session category error: %@", catErr.localizedDescription];
+      NSString *msg =
+          [NSString stringWithFormat:@"Audio session category error: %@",
+                                     catErr.localizedDescription];
       [self emitOnError:msg];
       _isStarting = NO;
       reject(@"start", msg, catErr);
       return;
     }
   } @catch (NSException *ex) {
-    NSString *msg = [NSString stringWithFormat:@"Exception setting category: %@", ex.reason ?: @"unknown"]; 
+    NSString *msg =
+        [NSString stringWithFormat:@"Exception setting category: %@",
+                                   ex.reason ?: @"unknown"];
     [self emitOnError:msg];
     _isStarting = NO;
     reject(@"start", msg, nil);
@@ -165,34 +172,48 @@ RCT_EXPORT_MODULE()
     dispatch_async(dispatch_get_main_queue(), ^{ // proceed on main
       NSError *actErr = nil;
       if (![audioSession setActive:YES error:&actErr]) {
-        NSString *msg = [NSString stringWithFormat:@"Failed to activate audio session: %@", actErr.localizedDescription];
+        NSString *msg =
+            [NSString stringWithFormat:@"Failed to activate audio session: %@",
+                                       actErr.localizedDescription];
         [self emitOnError:msg];
         self->_isStarting = NO;
         reject(@"start", msg, actErr);
         return;
       }
 
-  self->_formatInput = [self->_inputNode inputFormatForBus:0];
-  const double sampleRate = (self->_formatInput.sampleRate > 0) ? self->_formatInput.sampleRate : 16000.0;
-  const AVAudioFrameCount bufferSize = (AVAudioFrameCount)(sampleRate / 10.0);
-  self->_isRunning = YES;
+      self->_formatInput = [self->_inputNode inputFormatForBus:0];
+      const double sampleRate = (self->_formatInput.sampleRate > 0)
+                                    ? self->_formatInput.sampleRate
+                                    : 16000.0;
+      const AVAudioFrameCount bufferSize =
+          (AVAudioFrameCount)(sampleRate / 10.0);
+      self->_isRunning = YES;
 
       __weak __typeof(self) weakSelf = self;
       dispatch_async(self->_processingQueue, ^{ // recognizer init off main
         __strong __typeof(self) self = weakSelf;
-        if (!self || !self->_isRunning) return;
+        if (!self || !self->_isRunning)
+          return;
         CFAbsoluteTime tRec0 = CFAbsoluteTimeGetCurrent();
         if (grammar != nil && grammar.count > 0) {
           NSError *jsonErr = nil;
-            NSData *jsonGrammar = [NSJSONSerialization dataWithJSONObject:grammar options:0 error:&jsonErr];
+          NSData *jsonGrammar =
+              [NSJSONSerialization dataWithJSONObject:grammar
+                                              options:0
+                                                error:&jsonErr];
           if (jsonGrammar && !jsonErr) {
-            std::string grammarStd((const char *)[jsonGrammar bytes], [jsonGrammar length]);
-            self->_recognizer = vosk_recognizer_new_grm(self->_currentModel.model, (float)sampleRate, grammarStd.c_str());
+            std::string grammarStd((const char *)[jsonGrammar bytes],
+                                   [jsonGrammar length]);
+            self->_recognizer =
+                vosk_recognizer_new_grm(self->_currentModel.model,
+                                        (float)sampleRate, grammarStd.c_str());
           } else {
-            self->_recognizer = vosk_recognizer_new(self->_currentModel.model, (float)sampleRate);
+            self->_recognizer = vosk_recognizer_new(self->_currentModel.model,
+                                                    (float)sampleRate);
           }
         } else {
-          self->_recognizer = vosk_recognizer_new(self->_currentModel.model, (float)sampleRate);
+          self->_recognizer =
+              vosk_recognizer_new(self->_currentModel.model, (float)sampleRate);
         }
         CFAbsoluteTime tRec1 = CFAbsoluteTimeGetCurrent();
         NSLog(@"[Vosk] Recognizer init: %.2f ms", (tRec1 - tRec0) * 1000.0);
@@ -202,15 +223,21 @@ RCT_EXPORT_MODULE()
             reject(@"start", @"Recognizer initialization failed", nil);
             self->_isStarting = NO;
           });
-          return; // promise already resolved later below or not? -> we won't resolve now
+          return; // promise already resolved later below or not? -> we won't
+                  // resolve now
         }
 
         dispatch_async(dispatch_get_main_queue(), ^{ // start engine first
-          if (!self->_isRunning) { self->_isStarting = NO; return; }
+          if (!self->_isRunning) {
+            self->_isStarting = NO;
+            return;
+          }
           [self->_audioEngine prepare];
           NSError *startErr = nil;
           if (![self->_audioEngine startAndReturnError:&startErr]) {
-            NSString *msg = [NSString stringWithFormat:@"Failed to start audio engine: %@", startErr.localizedDescription];
+            NSString *msg =
+                [NSString stringWithFormat:@"Failed to start audio engine: %@",
+                                           startErr.localizedDescription];
             [self emitOnError:msg];
             [self stopInternalWithoutEvents:YES];
             self->_isStarting = NO;
@@ -219,17 +246,30 @@ RCT_EXPORT_MODULE()
           }
           // Timeout timer
           if (timeoutMs >= 0) {
-            self->_timeoutSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, self->_processingQueue);
+            self->_timeoutSource = dispatch_source_create(
+                DISPATCH_SOURCE_TYPE_TIMER, 0, 0, self->_processingQueue);
             if (self->_timeoutSource) {
               uint64_t delayNs = (uint64_t)(timeoutMs * 1000000.0);
               __weak __typeof(self) weakSelfTimeout = self;
-              dispatch_source_set_timer(self->_timeoutSource, dispatch_time(DISPATCH_TIME_NOW, delayNs), DISPATCH_TIME_FOREVER, 5 * NSEC_PER_MSEC);
-              dispatch_source_set_event_handler(self->_timeoutSource, ^{ __strong __typeof(self) selfT = weakSelfTimeout; if (!selfT || !selfT->_isRunning) return; [selfT stopInternalWithoutEvents:YES]; dispatch_async(dispatch_get_main_queue(), ^{ [selfT emitOnTimeout]; }); });
+              dispatch_source_set_timer(
+                  self->_timeoutSource,
+                  dispatch_time(DISPATCH_TIME_NOW, delayNs),
+                  DISPATCH_TIME_FOREVER, 5 * NSEC_PER_MSEC);
+              dispatch_source_set_event_handler(self->_timeoutSource, ^{
+                __strong __typeof(self) selfT = weakSelfTimeout;
+                if (!selfT || !selfT->_isRunning)
+                  return;
+                [selfT stopInternalWithoutEvents:YES];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                  [selfT emitOnTimeout];
+                });
+              });
               dispatch_resume(self->_timeoutSource);
             }
           }
           CFAbsoluteTime tEnd = CFAbsoluteTimeGetCurrent();
-          NSLog(@"[Vosk] start() engine running (tap pending): %.2f ms", (tEnd - tStart) * 1000.0);
+          NSLog(@"[Vosk] start() engine running (tap pending): %.2f ms",
+                (tEnd - tStart) * 1000.0);
           // Resolve early; tap installation will be async via retry
           resolve(nil);
           self->_isStarting = NO;
@@ -244,50 +284,149 @@ RCT_EXPORT_MODULE()
 
 // Retry-based tap installer; called on main queue only
 - (void)scheduleTapInstallationWithBufferSize:(AVAudioFrameCount)bufferSize {
-  if (!_isRunning) { _pendingTap = NO; return; }
-  if (_tapInstalled) { _pendingTap = NO; return; }
-  if (!_recognizer) { _pendingTap = NO; return; }
+  if (!_isRunning) {
+    _pendingTap = NO;
+    return;
+  }
+  if (_tapInstalled) {
+    _pendingTap = NO;
+    return;
+  }
+  if (!_recognizer) {
+    _pendingTap = NO;
+    return;
+  }
   AVAudioFormat *fmt = [_inputNode inputFormatForBus:0];
   double sr = fmt ? fmt.sampleRate : 0.0;
   AVAudioChannelCount ch = fmt ? fmt.channelCount : 0;
   if (sr <= 0.0 || ch == 0) {
     if (_tapRetryCount == 0) {
-      NSLog(@"[Vosk] Tap install waiting for valid format… (sr=%.1f ch=%u)", sr, (unsigned int)ch);
+      NSLog(@"[Vosk] Tap install waiting for valid format… (sr=%.1f ch=%u)", sr,
+            (unsigned int)ch);
     }
     if (_tapRetryCount >= 25) { // ~2.5s at 100ms intervals
-      [self emitOnError:@"Unable to obtain valid audio input format (stabilization timeout)"]; _pendingTap = NO; return; }
+      [self emitOnError:@"Unable to obtain valid audio input format "
+                        @"(stabilization timeout)"];
+      _pendingTap = NO;
+      return;
+    }
     _tapRetryCount++;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [self scheduleTapInstallationWithBufferSize:bufferSize]; });
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+          [self scheduleTapInstallationWithBufferSize:bufferSize];
+        });
     return;
   }
   // Have a valid format now
-  NSLog(@"[Vosk] Tap install attempt with format sr=%.1f ch=%u retry=%d", sr, (unsigned int)ch, _tapRetryCount);
+  NSLog(@"[Vosk] Tap install attempt with format sr=%.1f ch=%u retry=%d", sr,
+        (unsigned int)ch, _tapRetryCount);
   __weak __typeof(self) weakSelfTap = self;
   @try {
-    [_inputNode installTapOnBus:0 bufferSize:bufferSize format:fmt block:^(AVAudioPCMBuffer *buffer, AVAudioTime *when) {
-      __strong __typeof(self) self = weakSelfTap; if (!self) return; if (!self->_isRunning) return;
-      dispatch_async(self->_processingQueue, ^{
-        if (!self->_isRunning) return; VoskRecognizer *recognizer = self->_recognizer; if (!recognizer) return;
-        AVAudioFrameCount frames = buffer.frameLength; if (frames == 0) return;
-        int accepted = 0;
-        if (buffer.int16ChannelData && buffer.int16ChannelData[0]) {
-          int dataLen = (int)(frames * sizeof(int16_t));
-          accepted = vosk_recognizer_accept_waveform(recognizer, (const char *)buffer.int16ChannelData[0], (int32_t)dataLen);
-        } else if (buffer.floatChannelData && buffer.floatChannelData[0]) {
-          float *const *floatChannels = buffer.floatChannelData; std::vector<int16_t> pcm16; pcm16.resize(frames); float *ch0 = floatChannels[0];
-          for (AVAudioFrameCount i = 0; i < frames; ++i) { float s = ch0[i]; if (s > 1.f) s = 1.f; else if (s < -1.f) s = -1.f; pcm16[i] = (int16_t)lrintf(s * 32767.f); }
-          int dataLen = (int)(frames * sizeof(int16_t));
-          accepted = vosk_recognizer_accept_waveform(recognizer, (const char *)pcm16.data(), (int32_t)dataLen);
-        } else { return; }
-        const char *cstr = NULL; BOOL isFinal = NO; if (accepted) { cstr = vosk_recognizer_result(recognizer); isFinal = YES; } else { cstr = vosk_recognizer_partial_result(recognizer); }
-        NSString *json = cstr ? [NSString stringWithUTF8String:cstr] : nil;
-        dispatch_async(dispatch_get_main_queue(), ^{ if (!json) return; NSData *data = [json dataUsingEncoding:NSUTF8StringEncoding]; NSDictionary *parsed = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil; if (![parsed isKindOfClass:[NSDictionary class]]) { if (isFinal) { [self emitOnResult:json]; } else { [self emitOnPartialResult:json]; } return; } NSString *text = parsed[@"text"]; NSString *partial = parsed[@"partial"]; if (isFinal) { if (text.length > 0) { [self emitOnResult:text]; } self->_lastPartial = nil; } else { if (partial.length > 0 && (!self->_lastPartial || ![self->_lastPartial isEqualToString:partial])) { [self emitOnPartialResult:partial]; } self->_lastPartial = partial ?: self->_lastPartial; } });
-      });
-    }];
-    _tapInstalled = YES; _pendingTap = NO; NSLog(@"[Vosk] Tap installed successfully after %d retries.", _tapRetryCount);
+    [_inputNode
+        installTapOnBus:0
+             bufferSize:bufferSize
+                 format:fmt
+                  block:^(AVAudioPCMBuffer *buffer, AVAudioTime *when) {
+                    __strong __typeof(self) self = weakSelfTap;
+                    if (!self)
+                      return;
+                    if (!self->_isRunning)
+                      return;
+                    dispatch_async(self->_processingQueue, ^{
+                      if (!self->_isRunning)
+                        return;
+                      VoskRecognizer *recognizer = self->_recognizer;
+                      if (!recognizer)
+                        return;
+                      AVAudioFrameCount frames = buffer.frameLength;
+                      if (frames == 0)
+                        return;
+                      int accepted = 0;
+                      if (buffer.int16ChannelData &&
+                          buffer.int16ChannelData[0]) {
+                        int dataLen = (int)(frames * sizeof(int16_t));
+                        accepted = vosk_recognizer_accept_waveform(
+                            recognizer,
+                            (const char *)buffer.int16ChannelData[0],
+                            (int32_t)dataLen);
+                      } else if (buffer.floatChannelData &&
+                                 buffer.floatChannelData[0]) {
+                        float *const *floatChannels = buffer.floatChannelData;
+                        std::vector<int16_t> pcm16;
+                        pcm16.resize(frames);
+                        float *ch0 = floatChannels[0];
+                        for (AVAudioFrameCount i = 0; i < frames; ++i) {
+                          float s = ch0[i];
+                          if (s > 1.f)
+                            s = 1.f;
+                          else if (s < -1.f)
+                            s = -1.f;
+                          pcm16[i] = (int16_t)lrintf(s * 32767.f);
+                        }
+                        int dataLen = (int)(frames * sizeof(int16_t));
+                        accepted = vosk_recognizer_accept_waveform(
+                            recognizer, (const char *)pcm16.data(),
+                            (int32_t)dataLen);
+                      } else {
+                        return;
+                      }
+                      const char *cstr = NULL;
+                      BOOL isFinal = NO;
+                      if (accepted) {
+                        cstr = vosk_recognizer_result(recognizer);
+                        isFinal = YES;
+                      } else {
+                        cstr = vosk_recognizer_partial_result(recognizer);
+                      }
+                      NSString *json =
+                          cstr ? [NSString stringWithUTF8String:cstr] : nil;
+                      dispatch_async(dispatch_get_main_queue(), ^{
+                        if (!json)
+                          return;
+                        NSData *data =
+                            [json dataUsingEncoding:NSUTF8StringEncoding];
+                        NSDictionary *parsed =
+                            data ? [NSJSONSerialization JSONObjectWithData:data
+                                                                   options:0
+                                                                     error:nil]
+                                 : nil;
+                        if (![parsed isKindOfClass:[NSDictionary class]]) {
+                          if (isFinal) {
+                            [self emitOnResult:json];
+                          } else {
+                            [self emitOnPartialResult:json];
+                          }
+                          return;
+                        }
+                        NSString *text = parsed[@"text"];
+                        NSString *partial = parsed[@"partial"];
+                        if (isFinal) {
+                          if (text.length > 0) {
+                            [self emitOnResult:text];
+                          }
+                          self->_lastPartial = nil;
+                        } else {
+                          if (partial.length > 0 &&
+                              (!self->_lastPartial ||
+                               ![self->_lastPartial isEqualToString:partial])) {
+                            [self emitOnPartialResult:partial];
+                          }
+                          self->_lastPartial = partial ?: self->_lastPartial;
+                        }
+                      });
+                    });
+                  }];
+    _tapInstalled = YES;
+    _pendingTap = NO;
+    NSLog(@"[Vosk] Tap installed successfully after %d retries.",
+          _tapRetryCount);
   } @catch (NSException *ex) {
-    [self emitOnError:[NSString stringWithFormat:@"Failed to install tap (retry phase): %@", ex.reason ?: @"unknown"]];
-    _pendingTap = NO; [self stopInternalWithoutEvents:YES];
+    [self emitOnError:[NSString stringWithFormat:
+                                    @"Failed to install tap (retry phase): %@",
+                                    ex.reason ?: @"unknown"]];
+    _pendingTap = NO;
+    [self stopInternalWithoutEvents:YES];
   }
 }
 
@@ -316,99 +455,221 @@ RCT_EXPORT_MODULE()
 - (void)removeListeners:(double)count {
 }
 
-RCT_EXPORT_METHOD(transcribeFile:(nonnull NSString *)path
-                  resolve:(nonnull RCTPromiseResolveBlock)resolve
-                  reject:(nonnull RCTPromiseRejectBlock)reject) {
-    if (_currentModel == nil) {
-        reject(@"transcribeFile", @"Model not loaded", nil);
-        return;
+RCT_EXPORT_METHOD(transcribeFile : (nonnull NSString *)path resolve : (
+    nonnull RCTPromiseResolveBlock)
+                      resolve reject : (nonnull RCTPromiseRejectBlock)reject) {
+  if (_currentModel == nil) {
+    reject(@"transcribeFile", @"Model not loaded", nil);
+    return;
+  }
+
+  dispatch_async(_processingQueue, ^{
+    VoskRecognizer *recognizer =
+        vosk_recognizer_new(_currentModel.model, 16000.0f);
+    if (!recognizer) {
+      reject(@"transcribeFile", @"Failed to create recognizer", nil);
+      return;
     }
-    
-    dispatch_async(_processingQueue, ^{
-        VoskRecognizer *recognizer = vosk_recognizer_new(_currentModel.model, 16000.0f);
-        if (!recognizer) {
-             reject(@"transcribeFile", @"Failed to create recognizer", nil);
-             return;
-        }
-        
-        NSData *data = [NSData dataWithContentsOfFile:path];
-        if (!data) {
-            vosk_recognizer_free(recognizer);
-            reject(@"transcribeFile", @"Failed to read file", nil);
-            return;
-        }
-        
-        vosk_recognizer_accept_waveform(recognizer, (const char *)[data bytes], (int)[data length]);
-        
-        const char *res = vosk_recognizer_final_result(recognizer);
-        NSString *resultStr = res ? [NSString stringWithUTF8String:res] : @"";
-        
-        vosk_recognizer_free(recognizer);
-        resolve(resultStr);
-    });
+
+    NSData *data = [NSData dataWithContentsOfFile:path];
+    if (!data) {
+      vosk_recognizer_free(recognizer);
+      reject(@"transcribeFile", @"Failed to read file", nil);
+      return;
+    }
+
+    vosk_recognizer_accept_waveform(recognizer, (const char *)[data bytes],
+                                    (int)[data length]);
+
+    const char *res = vosk_recognizer_final_result(recognizer);
+    NSString *resultStr = res ? [NSString stringWithUTF8String:res] : @"";
+
+    vosk_recognizer_free(recognizer);
+    resolve(resultStr);
+  });
 }
 
-RCT_EXPORT_METHOD(transcribeData:(nonnull NSString *)dataStr
-                  resolve:(nonnull RCTPromiseResolveBlock)resolve
-                  reject:(nonnull RCTPromiseRejectBlock)reject) {
-    if (_currentModel == nil) {
-        reject(@"transcribeData", @"Model not loaded", nil);
-        return;
+RCT_EXPORT_METHOD(transcribeData : (nonnull NSString *)dataStr resolve : (
+    nonnull RCTPromiseResolveBlock)
+                      resolve reject : (nonnull RCTPromiseRejectBlock)reject) {
+  if (_currentModel == nil) {
+    reject(@"transcribeData", @"Model not loaded", nil);
+    return;
+  }
+
+  dispatch_async(_processingQueue, ^{
+    VoskRecognizer *recognizer =
+        vosk_recognizer_new(_currentModel.model, 16000.0f);
+    if (!recognizer) {
+      reject(@"transcribeData", @"Failed to create recognizer", nil);
+      return;
     }
-    
-    dispatch_async(_processingQueue, ^{
-        VoskRecognizer *recognizer = vosk_recognizer_new(_currentModel.model, 16000.0f);
-        if (!recognizer) {
-             reject(@"transcribeData", @"Failed to create recognizer", nil);
-             return;
-        }
-        
-        NSData *data = [[NSData alloc] initWithBase64EncodedString:dataStr options:0];
-        if (!data) {
-            vosk_recognizer_free(recognizer);
-            reject(@"transcribeData", @"Failed to decode base64 data", nil);
-            return;
-        }
-        
-        vosk_recognizer_accept_waveform(recognizer, (const char *)[data bytes], (int)[data length]);
-        
-        const char *res = vosk_recognizer_final_result(recognizer);
-        NSString *resultStr = res ? [NSString stringWithUTF8String:res] : @"";
-        
-        vosk_recognizer_free(recognizer);
-        resolve(resultStr);
-    });
+
+    NSData *data = [[NSData alloc] initWithBase64EncodedString:dataStr
+                                                       options:0];
+    if (!data) {
+      vosk_recognizer_free(recognizer);
+      reject(@"transcribeData", @"Failed to decode base64 data", nil);
+      return;
+    }
+
+    vosk_recognizer_accept_waveform(recognizer, (const char *)[data bytes],
+                                    (int)[data length]);
+
+    const char *res = vosk_recognizer_final_result(recognizer);
+    NSString *resultStr = res ? [NSString stringWithUTF8String:res] : @"";
+
+    vosk_recognizer_free(recognizer);
+    resolve(resultStr);
+  });
 }
 
-RCT_EXPORT_METHOD(transcribeDataArray:(nonnull NSArray<NSNumber *> *)dataArray
-                  resolve:(nonnull RCTPromiseResolveBlock)resolve
-                  reject:(nonnull RCTPromiseRejectBlock)reject) {
-    if (_currentModel == nil) {
-        reject(@"transcribeDataArray", @"Model not loaded", nil);
-        return;
+RCT_EXPORT_METHOD(transcribeDataArray : (nonnull NSArray<NSNumber *> *)
+                      dataArray resolve : (nonnull RCTPromiseResolveBlock)
+                          resolve reject : (nonnull RCTPromiseRejectBlock)
+                              reject) {
+  if (_currentModel == nil) {
+    reject(@"transcribeDataArray", @"Model not loaded", nil);
+    return;
+  }
+
+  dispatch_async(_processingQueue, ^{
+    VoskRecognizer *recognizer =
+        vosk_recognizer_new(_currentModel.model, 16000.0f);
+    if (!recognizer) {
+      reject(@"transcribeDataArray", @"Failed to create recognizer", nil);
+      return;
     }
-    
-    dispatch_async(_processingQueue, ^{
-        VoskRecognizer *recognizer = vosk_recognizer_new(_currentModel.model, 16000.0f);
-        if (!recognizer) {
-             reject(@"transcribeDataArray", @"Failed to create recognizer", nil);
-             return;
+
+    NSMutableData *data = [NSMutableData dataWithLength:dataArray.count];
+    uint8_t *bytes = (uint8_t *)[data mutableBytes];
+    for (NSUInteger i = 0; i < dataArray.count; i++) {
+      bytes[i] = (uint8_t)[dataArray[i] unsignedCharValue];
+    }
+
+    vosk_recognizer_accept_waveform(recognizer, (const char *)[data bytes],
+                                    (int)[data length]);
+
+    const char *res = vosk_recognizer_final_result(recognizer);
+    NSString *resultStr = res ? [NSString stringWithUTF8String:res] : @"";
+
+    vosk_recognizer_free(recognizer);
+    resolve(resultStr);
+  });
+}
+
+RCT_EXPORT_METHOD(startStreaming : (JS::NativeVosk::VoskOptions *_Nullable)
+                      options resolve : (nonnull RCTPromiseResolveBlock)resolve
+                          reject : (nonnull RCTPromiseRejectBlock)reject) {
+  if (_currentModel == nil) {
+    reject(@"NO_MODEL", @"Call loadModel() first", nil);
+    return;
+  }
+  if (_streamingRecognizer != NULL) {
+    reject(@"ALREADY_STREAMING", @"Streaming already active", nil);
+    return;
+  }
+
+  dispatch_async(_processingQueue, ^{
+    NSArray<NSString *> *grammar = nil;
+    if (options && options->grammar()) {
+      auto gVec = options->grammar();
+      if (gVec) {
+        NSMutableArray<NSString *> *tmp = [NSMutableArray new];
+        size_t count = gVec->size();
+        for (size_t i = 0; i < count; ++i) {
+          NSString *s = gVec->at(static_cast<int>(i));
+          if (s)
+            [tmp addObject:s];
         }
-        
-        NSMutableData *data = [NSMutableData dataWithLength:dataArray.count];
-        uint8_t *bytes = (uint8_t *)[data mutableBytes];
-        for (NSUInteger i = 0; i < dataArray.count; i++) {
-            bytes[i] = (uint8_t)[dataArray[i] unsignedCharValue];
-        }
-        
-        vosk_recognizer_accept_waveform(recognizer, (const char *)[data bytes], (int)[data length]);
-        
-        const char *res = vosk_recognizer_final_result(recognizer);
-        NSString *resultStr = res ? [NSString stringWithUTF8String:res] : @"";
-        
-        vosk_recognizer_free(recognizer);
-        resolve(resultStr);
-    });
+        grammar = tmp.count > 0 ? tmp : nil;
+      }
+    }
+
+    if (grammar != nil && grammar.count > 0) {
+      NSError *jsonErr = nil;
+      NSData *jsonGrammar = [NSJSONSerialization dataWithJSONObject:grammar
+                                                            options:0
+                                                              error:&jsonErr];
+      if (jsonGrammar && !jsonErr) {
+        std::string grammarStd((const char *)[jsonGrammar bytes],
+                               [jsonGrammar length]);
+        _streamingRecognizer = vosk_recognizer_new_grm(
+            _currentModel.model, 16000.0f, grammarStd.c_str());
+      } else {
+        _streamingRecognizer =
+            vosk_recognizer_new(_currentModel.model, 16000.0f);
+      }
+    } else {
+      _streamingRecognizer = vosk_recognizer_new(_currentModel.model, 16000.0f);
+    }
+    if (!_streamingRecognizer) {
+      reject(@"START_STREAMING_FAIL", @"Failed to create streaming recognizer",
+             nil);
+      return;
+    }
+    resolve(@"Streaming started");
+  });
+}
+
+RCT_EXPORT_METHOD(feedChunk : (nonnull NSArray<NSNumber *> *)
+                      dataArray resolve : (nonnull RCTPromiseResolveBlock)
+                          resolve reject : (nonnull RCTPromiseRejectBlock)
+                              reject) {
+  if (_streamingRecognizer == NULL) {
+    reject(@"NO_RECOGNIZER", @"Call startStreaming() first", nil);
+    return;
+  }
+  dispatch_async(_processingQueue, ^{
+    if (!_streamingRecognizer) {
+      reject(@"NO_RECOGNIZER", @"Streaming recognizer was freed", nil);
+      return;
+    }
+    NSMutableData *data = [NSMutableData dataWithLength:dataArray.count];
+    uint8_t *bytes = (uint8_t *)[data mutableBytes];
+    for (NSUInteger i = 0; i < dataArray.count; i++) {
+      bytes[i] = (uint8_t)[dataArray[i] unsignedCharValue];
+    }
+    int accepted = vosk_recognizer_accept_waveform(
+        _streamingRecognizer, (const char *)[data bytes], (int)[data length]);
+    if (accepted) {
+      const char *res = vosk_recognizer_result(_streamingRecognizer);
+      NSString *resultStr = res ? [NSString stringWithUTF8String:res] : nil;
+      if (resultStr) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [self emitOnResult:resultStr];
+        });
+      }
+    }
+    const char *partial = vosk_recognizer_partial_result(_streamingRecognizer);
+    NSString *partialStr =
+        partial ? [NSString stringWithUTF8String:partial] : nil;
+    if (partialStr) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [self emitOnPartialResult:partialStr];
+      });
+    }
+    resolve(@YES);
+  });
+}
+
+RCT_EXPORT_METHOD(stopStreaming : (nonnull RCTPromiseResolveBlock)
+                      resolve reject : (nonnull RCTPromiseRejectBlock)reject) {
+  if (_streamingRecognizer == NULL) {
+    reject(@"NO_RECOGNIZER", @"No active streaming session", nil);
+    return;
+  }
+  dispatch_async(_processingQueue, ^{
+    if (!_streamingRecognizer) {
+      reject(@"NO_RECOGNIZER", @"Streaming recognizer was freed", nil);
+      return;
+    }
+    const char *res = vosk_recognizer_final_result(_streamingRecognizer);
+    NSString *resultStr = res ? [NSString stringWithUTF8String:res] : @"";
+    vosk_recognizer_free(_streamingRecognizer);
+    _streamingRecognizer = NULL;
+    resolve(resultStr);
+  });
 }
 
 - (std::shared_ptr<facebook::react::TurboModule>)getTurboModule:
@@ -423,7 +684,7 @@ RCT_EXPORT_METHOD(transcribeDataArray:(nonnull NSArray<NSNumber *> *)dataArray
   _isStarting = NO;
   _tapInstalled = NO;
   _pendingTap = NO;
-  
+
   @try {
     if (_inputNode) {
       [_inputNode removeTapOnBus:0];
