@@ -24,6 +24,10 @@ export interface Spec extends TurboModule {
   transcribeData: (data: string) => Promise<string>;
   transcribeDataArray: (data: number[]) => Promise<string>;
 
+  startStreaming: (options?: VoskOptions) => Promise<string>;
+  feedChunk: (data: number[]) => Promise<boolean>;
+  stopStreaming: () => Promise<string>;
+
   addListener: (eventType: string) => void;
   removeListeners: (count: number) => void;
 

@@ -107,6 +107,45 @@ export function transcribeFile(
 }
 
 /**
+ * Start a streaming session for progressive PCM data transcription.
+ *
+ * @param options - Optional settings for the recognizer (e.g., grammar).
+ * @returns A promise that resolves when the streaming session is initialized
+ * @example
+ *   await startStreaming();
+ *   // Or with grammar
+ *   await startStreaming({ grammar: ['yes', 'no', '[unk]'] });
+ */
+export function startStreaming(options?: VoskOptions): Promise<string> {
+  return Vosk.startStreaming(options);
+}
+
+/**
+ * Feed a chunk of PCM data to the active streaming session.
+ * Emits partial results via onPartialResult and onResult events.
+ *
+ * @param data - Array of PCM bytes (16-bit LE, 16 kHz, mono)
+ * @returns A promise that resolves to true after chunk is processed
+ * @example
+ *   await feedChunk([0, 1, 2, ...]);
+ */
+export function feedChunk(data: number[]): Promise<boolean> {
+  return Vosk.feedChunk(data);
+}
+
+/**
+ * Stop the streaming session and get the final result.
+ *
+ * @returns A promise that resolves with the final transcription result
+ * @example
+ *   const result = await stopStreaming();
+ *   console.log(JSON.parse(result).text);
+ */
+export function stopStreaming(): Promise<string> {
+  return Vosk.stopStreaming();
+}
+
+/**
  * Event listener for error event
  *
  * @param cb - Callback to be called on error event

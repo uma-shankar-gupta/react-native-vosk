@@ -3,6 +3,7 @@ package com.vosk
 import android.util.Log
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.module.annotations.ReactModule
@@ -24,6 +25,7 @@ class VoskModule(reactContext: ReactApplicationContext) :
   private var speechService: SpeechService? = null
   private var context: ReactApplicationContext? = reactContext
   private var recognizer: Recognizer? = null
+  private var streamingRecognizer: Recognizer? = null
   private var sampleRate = 16000.0f
   private var isStopping = false
 
@@ -171,7 +173,7 @@ class VoskModule(reactContext: ReactApplicationContext) :
    * @param promise resolves to the Vosk JSON string
    */
   @ReactMethod
-  fun transcribeFile(wavPath: String, promise: Promise) {
+  override fun transcribeFile(wavPath: String, promise: Promise) {
     // Ensure model is loaded
     if (model == null) {
       promise.reject("NO_MODEL", "Call loadModel() first")
@@ -214,7 +216,7 @@ class VoskModule(reactContext: ReactApplicationContext) :
    * @param promise resolves to the Vosk JSON string
    */
   @ReactMethod
-  fun transcribeData(data: String, promise: Promise) {
+  override fun transcribeData(data: String, promise: Promise) {
     // Ensure model is loaded
     if (model == null) {
       promise.reject("NO_MODEL", "Call loadModel() first")
@@ -249,7 +251,7 @@ class VoskModule(reactContext: ReactApplicationContext) :
    * @param promise resolves to the Vosk JSON string
    */
   @ReactMethod
-  fun transcribeDataArray(data: ReadableArray, promise: Promise) {
+  override fun transcribeDataArray(data: ReadableArray, promise: Promise) {
     // Ensure model is loaded
     if (model == null) {
       promise.reject("NO_MODEL", "Call loadModel() first")
@@ -279,6 +281,102 @@ class VoskModule(reactContext: ReactApplicationContext) :
     } finally {
       // Clean up
       recognizer?.close()
+    }
+  }
+
+  /**
+   * Start a streaming session for progressive PCM data transcription.
+   * @param options Optional settings (grammar)
+   * @param promise resolves when streaming session is initialized
+   */
+  @ReactMethod
+  override fun startStreaming(options: ReadableMap?, promise: Promise) {
+    if (model == null) {
+      promise.reject("NO_MODEL", "Call loadModel() first")
+      return
+    }
+    if (streamingRecognizer != null) {
+      promise.reject("ALREADY_STREAMING", "Streaming already active")
+      return
+    }
+
+    try {
+      streamingRecognizer =
+              if (options != null && options.hasKey("grammar") && !options.isNull("grammar")) {
+                Recognizer(model, sampleRate, makeGrammar(options.getArray("grammar")!!))
+              } else {
+                Recognizer(model, sampleRate)
+              }
+      promise.resolve("Streaming started")
+    } catch (e: Exception) {
+      promise.reject("START_STREAMING_FAIL", e)
+    }
+  }
+
+  /**
+   * Feed a chunk of PCM data to the streaming session. Emits partial results via onPartialResult
+   * and onResult events.
+   * @param data ReadableArray of PCM bytes (16-bit LE, 16 kHz, mono)
+   * @param promise resolves to true after chunk is processed
+   */
+  @ReactMethod
+  override fun feedChunk(data: ReadableArray, promise: Promise) {
+    if (streamingRecognizer == null) {
+      promise.reject("NO_RECOGNIZER", "Call startStreaming() first")
+      return
+    }
+
+    try {
+      // Convert ReadableArray to ByteArray
+      val size = data.size()
+      val bytes = ByteArray(size)
+      for (i in 0 until size) {
+        bytes[i] = data.getInt(i).toByte()
+      }
+
+      // Feed chunk to recognizer
+      if (streamingRecognizer!!.acceptWaveForm(bytes, size)) {
+        // Got a complete result
+        val result = streamingRecognizer!!.result
+        val text = parseHypothesis(result)
+        if (!text.isNullOrEmpty()) {
+          emitOnResult(text)
+        }
+      }
+
+      // Always emit partial result
+      val partial = streamingRecognizer!!.partialResult
+      val partialText = parseHypothesis(partial, "partial")
+      if (!partialText.isNullOrEmpty()) {
+        emitOnPartialResult(partialText)
+      }
+
+      promise.resolve(true)
+    } catch (e: Exception) {
+      promise.reject("FEED_CHUNK_FAIL", e)
+    }
+  }
+
+  /**
+   * Stop the streaming session and get the final result.
+   * @param promise resolves to the final Vosk JSON result
+   */
+  @ReactMethod
+  override fun stopStreaming(promise: Promise) {
+    if (streamingRecognizer == null) {
+      promise.reject("NO_RECOGNIZER", "No active streaming session")
+      return
+    }
+
+    try {
+      val finalResult = streamingRecognizer!!.finalResult
+      streamingRecognizer!!.close()
+      streamingRecognizer = null
+      promise.resolve(finalResult)
+    } catch (e: Exception) {
+      streamingRecognizer?.close()
+      streamingRecognizer = null
+      promise.reject("STOP_STREAMING_FAIL", e)
     }
   }
 
